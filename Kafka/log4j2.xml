@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration>
+    <Appenders>
+        <Console name="Console" target="SYSTEM_ERR">
+            <PatternLayout pattern="[%d{ISO8601}] %-5p %c - %m%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <Root level="${sys:lab4.kafka.log.level:-warn}">
+            <AppenderRef ref="Console"/>
+        </Root>
+    </Loggers>
+</Configuration>
