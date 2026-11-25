@@ -1,4 +1,6 @@
 import java.io.File;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -13,6 +15,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
 
 class Lab4 {
     private static final Path WORK = Path.of(".lab4").toAbsolutePath();
@@ -20,17 +23,45 @@ class Lab4 {
             File.separatorChar == '\\' ? "java.exe" : "java");
     private static final String CENTRAL = "https://repo.maven.apache.org/maven2/";
     private static final String CLUSTER_ID = "cdG4bV24RLqBe43MdpZnmg";
+    private static final String LOOPBACK = "127.0.0.1";
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0 || (args.length == 2 && args[0].equals("web"))) {
             web(args.length == 0 ? 8079 : Integer.parseInt(args[1]));
-        } else if (args.length == 2 && args[0].equals("broker")) {
-            broker(Integer.parseInt(args[1]));
+        } else if (args.length >= 2 && args[0].equals("broker")) {
+            if (args.length == 2) {
+                broker(Integer.parseInt(args[1]), new String[] {LOOPBACK, LOOPBACK, LOOPBACK}, false);
+            } else if (args.length == 4 && args[2].equals("--lan")) {
+                broker(Integer.parseInt(args[1]), lanHosts(args[3]), true);
+            } else {
+                throw new IllegalArgumentException("java Lab4.java broker ID [--lan HOST or HOST1,HOST2,HOST3]");
+            }
         } else if (args.length >= 2 && args[0].equals("kafka")) {
             kafkaTool(args[1], Arrays.copyOfRange(args, 2, args.length));
         } else {
             throw new IllegalArgumentException("java Lab4.java [web PORT | broker 1..3 | kafka TOOL ARGS...]");
         }
+    }
+
+    private static String[] lanHosts(String addresses) {
+        String[] hosts = addresses.split(",", -1);
+        if (hosts.length != 1 && hosts.length != 3) {
+            throw new IllegalArgumentException("Specify one host for all brokers or three hosts in broker order");
+        }
+        for (int i = 0; i < hosts.length; i++) {
+            String host = hosts[i].strip();
+            if (!host.matches("[a-zA-Z0-9][a-zA-Z0-9.-]*")
+                    || host.equals("0.0.0.0") || host.startsWith("127.")
+                    || host.equalsIgnoreCase("localhost") || host.equalsIgnoreCase("localhost.")) {
+                throw new IllegalArgumentException("Expected a LAN IPv4 address or hostname: " + host);
+            }
+            hosts[i] = host;
+        }
+        return hosts.length == 1 ? new String[] {hosts[0], hosts[0], hosts[0]} : hosts;
+    }
+
+    private static int brokerPort(int node, boolean lan) {
+        return (lan ? 19092 : 9092) + (node - 1) * 100;
     }
 
     private static void web(int port) throws Exception {
@@ -103,18 +134,32 @@ class Lab4 {
         return kafka;
     }
 
-    private static void broker(int node) throws Exception {
+    private static void broker(int node, String[] hosts, boolean lan) throws Exception {
         if (node < 1 || node > 3) throw new IllegalArgumentException("Broker number must be 1..3");
+        String host = hosts[node - 1];
+        if (lan) {
+            InetAddress address = InetAddress.getByName(host);
+            if (address.isAnyLocalAddress() || address.isLoopbackAddress()
+                    || NetworkInterface.getByInetAddress(address) == null) {
+                throw new IllegalArgumentException("Broker " + node + " must run on the computer with address " + host);
+            }
+        }
         Path kafka = kafkaHome();
-        Path data = WORK.resolve("node-" + node);
-        int port = 9092 + (node - 1) * 100;
-        Path config = WORK.resolve("broker-" + node + ".properties");
+        Path cluster = lan ? WORK.resolve("lan") : WORK;
+        Files.createDirectories(cluster);
+        Path data = cluster.resolve("node-" + node);
+        int port = brokerPort(node, lan);
+        Path config = cluster.resolve("broker-" + node + ".properties");
+        StringJoiner voters = new StringJoiner(",");
+        for (int id = 1; id <= hosts.length; id++) {
+            voters.add(id + "@" + hosts[id - 1] + ":" + (brokerPort(id, lan) + 1));
+        }
         java.util.Properties settings = new java.util.Properties();
         settings.putAll(Map.ofEntries(
                 Map.entry("process.roles", "broker,controller"), Map.entry("node.id", Integer.toString(node)),
-                Map.entry("controller.quorum.voters", "1@127.0.0.1:9093,2@127.0.0.1:9193,3@127.0.0.1:9293"),
-                Map.entry("listeners", "PLAINTEXT://127.0.0.1:" + port + ",CONTROLLER://127.0.0.1:" + (port + 1)),
-                Map.entry("advertised.listeners", "PLAINTEXT://127.0.0.1:" + port),
+                Map.entry("controller.quorum.voters", voters.toString()),
+                Map.entry("listeners", "PLAINTEXT://" + host + ":" + port + ",CONTROLLER://" + host + ":" + (port + 1)),
+                Map.entry("advertised.listeners", "PLAINTEXT://" + host + ":" + port),
                 Map.entry("controller.listener.names", "CONTROLLER"),
                 Map.entry("inter.broker.listener.name", "PLAINTEXT"),
                 Map.entry("listener.security.protocol.map", "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"),
@@ -139,6 +184,15 @@ class Lab4 {
             case "groups" -> "org.apache.kafka.tools.consumer.group.ConsumerGroupCommand";
             default -> throw new IllegalArgumentException("Expected topics, producer, consumer or groups");
         };
+        if (args.length >= 2 && args[0].equals("--lan")) {
+            String[] hosts = lanHosts(args[1]);
+            StringJoiner bootstrap = new StringJoiner(",");
+            for (int id = 1; id <= hosts.length; id++) {
+                bootstrap.add(hosts[id - 1] + ":" + brokerPort(id, true));
+            }
+            args[0] = "--bootstrap-server";
+            args[1] = bootstrap.toString();
+        }
         kafkaJava(kafkaHome(), false, mainClass, args);
     }
 
