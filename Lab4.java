@@ -26,8 +26,15 @@ class Lab4 {
     private static final String LOOPBACK = "127.0.0.1";
 
     public static void main(String[] args) throws Exception {
-        if (args.length == 0 || (args.length == 2 && args[0].equals("web"))) {
-            web(args.length == 0 ? 8079 : Integer.parseInt(args[1]));
+        if (args.length == 0) {
+            web(8079, false);
+        } else if (args[0].equals("web") && args.length >= 2) {
+            boolean lan = args[1].equals("--lan");
+            int portArgument = lan ? 2 : 1;
+            if (args.length > portArgument + 1) {
+                throw new IllegalArgumentException("java Lab4.java web [--lan] [PORT]");
+            }
+            web(args.length == portArgument ? 8079 : Integer.parseInt(args[portArgument]), lan);
         } else if (args.length >= 2 && args[0].equals("broker")) {
             if (args.length == 2) {
                 broker(Integer.parseInt(args[1]), new String[] {LOOPBACK, LOOPBACK, LOOPBACK}, false);
@@ -39,7 +46,7 @@ class Lab4 {
         } else if (args.length >= 2 && args[0].equals("kafka")) {
             kafkaTool(args[1], Arrays.copyOfRange(args, 2, args.length));
         } else {
-            throw new IllegalArgumentException("java Lab4.java [web PORT | broker 1..3 | kafka TOOL ARGS...]");
+            throw new IllegalArgumentException("java Lab4.java [web [--lan] [PORT] | broker 1..3 | kafka TOOL ARGS...]");
         }
     }
 
@@ -64,7 +71,7 @@ class Lab4 {
         return (lan ? 19092 : 9092) + (node - 1) * 100;
     }
 
-    private static void web(int port) throws Exception {
+    private static void web(int port, boolean lan) throws Exception {
         if (port < 1024 || port > 65535) throw new IllegalArgumentException("Port must be in 1024..65535");
         Path tomcat = install(CENTRAL + "org/apache/tomcat/tomcat/9.0.111/tomcat-9.0.111.zip",
                 "apache-tomcat-9.0.111");
@@ -81,9 +88,10 @@ class Lab4 {
             }
         }
         Path config = server.resolve("conf/server.xml");
+        String bindAddress = lan ? "0.0.0.0" : LOOPBACK;
         Files.writeString(config, Files.readString(config)
                 .replace("<Server port=\"8005\"", "<Server port=\"-1\"")
-                .replace("<Connector port=\"8080\"", "<Connector address=\"127.0.0.1\" port=\"" + port + "\""));
+                .replace("<Connector port=\"8080\"", "<Connector address=\"" + bindAddress + "\" port=\"" + port + "\""));
         Files.copy(Path.of("TimeService/target/TimeService.war"), server.resolve("webapps/TimeService.war"),
                 java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 
@@ -100,6 +108,9 @@ class Lab4 {
                 "-d", classes.toString(), "ChatWebSocket/src/java/websocket/chat/ChatAnnotation.java");
         if (compiled != 0) throw new IllegalStateException("Chat compilation failed");
         System.out.println("Chat: http://127.0.0.1:" + port + "/examples/websocket/chat.xhtml");
+        if (lan) {
+            System.out.println("LAN: use this computer's network IPv4 address in place of 127.0.0.1.");
+        }
         run(JAVA.toString(), "-Dcatalina.home=" + tomcat, "-Dcatalina.base=" + server,
                 "-Djava.io.tmpdir=" + server.resolve("temp"), "-Dlab4.http.port=" + port,
                 "-cp", tomcat.resolve("bin/bootstrap.jar") + File.pathSeparator + juli,
